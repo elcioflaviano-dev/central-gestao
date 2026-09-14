@@ -9,7 +9,7 @@ if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 def tela_login():
-    col1, col2, col3 = st.columns()
+   col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         st.subheader("Acesso Operacional")
         with st.form("form_login"):
