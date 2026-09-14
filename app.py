@@ -3,6 +3,56 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
 st.set_page_config(page_title="Central de Gestão", layout="wide")
+
+# Aplicação do Layout Customizado via CSS
+st.markdown("""
+    <style>
+    /* Oculta o menu padrão, cabeçalho e rodapé do Streamlit para dar cara de aplicativo */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Estiliza os botões principais (Entrar, Atribuir Tarefa) */
+    .stButton > button {
+        width: 100%;
+        background-color: #0056b3;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 10px;
+        font-weight: bold;
+        transition: 0.3s;
+    }
+    .stButton > button:hover {
+        background-color: #003d82;
+        color: white;
+    }
+
+    /* Estiliza os formulários (Login e Cadastro) com efeito de cartão (sombra e bordas) */
+    [data-testid="stForm"] {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 25px;
+        box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Altera a cor de fundo da barra lateral */
+    [data-testid="stSidebar"] {
+        background-color: #f4f6f9;
+        border-right: 1px solid #e0e0e0;
+    }
+    
+    /* Ajusta os cabeçalhos para uma cor mais escura e profissional */
+    h1, h2, h3 {
+        color: #2c3e50;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Conexão com o Google Sheets (continua normal)
+conn = st.connection("gsheets", type=GSheetsConnection)
+# ... restante do seu código ...
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 if "autenticado" not in st.session_state:
