@@ -9,7 +9,7 @@ if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 def tela_login():
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3 = st.columns()
     with col2:
         st.subheader("Acesso Operacional")
         with st.form("form_login"):
@@ -24,7 +24,7 @@ def tela_login():
                     return
                 
                 df_usuarios["login"] = df_usuarios["login"].astype(str).str.strip()
-                df_usuarios["senha"] = df_usuarios["senha"].astype(str).str.strip()
+                df_usuarios["senha"] = df_usuarios["senha"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
                 
                 match = df_usuarios[(df_usuarios["login"] == usuario) & (df_usuarios["senha"] == senha)]
                 
@@ -46,21 +46,21 @@ else:
         st.rerun()
 
     try:
-        # Carrega as duas abas
         df_tarefas = conn.read(worksheet="tarefas", ttl=0).dropna(how="all")
         df_usuarios = conn.read(worksheet="usuarios", ttl=0).dropna(how="all")
         
-        # Garante a estrutura correta de colunas
         colunas_necessarias = ["login", "nome", "regiao", "tarefa", "status", "horario"]
         for col in colunas_necessarias:
             if col not in df_tarefas.columns:
                 df_tarefas[col] = ""
         df_tarefas = df_tarefas[colunas_necessarias]
 
-        # Gera a lista de técnicos dinamicamente para o dropdown
-        tecnicos_df = df_usuarios[df_usuarios["tipo"].str.lower() == "tecnico"]
-        lista_tecnicos = tecnicos_df["login"].astype(str).tolist()
+        # Filtra colaboradores que podem receber tarefas (técnico, coordenador, supervisor)
+        tipos_executores = ["tecnico", "coordenador", "supervisor"]
+        executores_df = df_usuarios[df_usuarios["tipo"].astype(str).str.strip().str.lower().isin(tipos_executores)]
+        lista_executores = executores_df["login"].astype(str).tolist()
 
+        # APENAS O GESTOR PODE DELEGAR E VER O PAINEL GLOBAL
         if st.session_state.tipo == "gestor":
             st.title("Painel de Controle - Gestão de Obrigações")
             
@@ -68,11 +68,11 @@ else:
             with st.form("nova_tarefa", clear_on_submit=True):
                 col1, col2 = st.columns(2)
                 
-                if not lista_tecnicos:
-                    st.warning("Cadastre usuários do tipo 'tecnico' na aba 'usuarios'.")
+                if not lista_executores:
+                    st.warning("Cadastre usuários executores na aba 'usuarios'.")
                     novo_login = None
                 else:
-                    novo_login = col1.selectbox("Selecionar Colaborador", lista_tecnicos)
+                    novo_login = col1.selectbox("Selecionar Colaborador", lista_executores)
                     
                 nova_tarefa = col2.text_input("Descrição da Obrigação / Ordem de Serviço")
                 
@@ -82,15 +82,15 @@ else:
                 
                 if st.form_submit_button("Atribuir Tarefa") and novo_login:
                     if nova_tarefa:
-                        nome_tecnico = tecnicos_df[tecnicos_df["login"] == novo_login].iloc[0]["nome"]
+                        nome_executora = executores_df[executores_df["login"] == novo_login].iloc[0]["nome"]
                         novo_dado = pd.DataFrame([{
-                            "login": novo_login, "nome": nome_tecnico, 
+                            "login": novo_login, "nome": nome_executora, 
                             "regiao": nova_regiao, "tarefa": nova_tarefa, 
                             "status": "Pendente", "horario": novo_horario
                         }])
                         df_atualizado = pd.concat([df_tarefas, novo_dado], ignore_index=True)
                         conn.update(worksheet="tarefas", data=df_atualizado)
-                        st.success(f"Obrigação enviada para {nome_tecnico}!")
+                        st.success(f"Obrigação enviada para {nome_executora}!")
                         st.rerun()
                     else:
                         st.warning("Preencha a descrição da tarefa.")
@@ -103,7 +103,8 @@ else:
                 st.success("Planilha atualizada!")
                 st.rerun()
 
-        elif st.session_state.tipo == "tecnico":
+        # COORDENADOR, SUPERVISOR E TÉCNICO FAZEM A EXECUÇÃO DAS TAREFAS
+        elif st.session_state.tipo in tipos_executores:
             st.title("Minhas Obrigações")
             minhas_tarefas = df_tarefas[df_tarefas["login"] == st.session_state.usuario]
             
