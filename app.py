@@ -10,7 +10,7 @@ if "autenticado" not in st.session_state:
 
 def tela_login():
    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
+   with col2:
         st.subheader("Acesso Operacional")
         with st.form("form_login"):
             usuario = st.text_input("Login")
