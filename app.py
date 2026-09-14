@@ -5,7 +5,6 @@ import pandas as pd
 st.set_page_config(page_title="Central de Gestão", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Banco de usuários (Você pode adicionar mais técnicos aqui depois)
 USUARIOS = {
     "admin": {"senha": "1234", "tipo": "gestor", "nome": "Elcio"},
     "tec01": {"senha": "1234", "tipo": "tecnico", "nome": "Carlos Silva"},
@@ -45,20 +44,17 @@ else:
         st.rerun()
 
     try:
-        # Lê a planilha e remove linhas totalmente vazias
         df = conn.read(ttl=0).dropna(how="all")
         
-        # Garante que as colunas existam para não dar erro
-        colunas_necessarias = ["login", "nome", "regiao", "tarefa", "status", "pontos"]
+        # Estrutura com horário programado
+        colunas_necessarias = ["login", "nome", "regiao", "tarefa", "status", "horario"]
         for col in colunas_necessarias:
             if col not in df.columns:
                 df[col] = ""
                 
         df = df[colunas_necessarias]
 
-        # ==========================================
         # VISÃO DO GESTOR (ADMIN)
-        # ==========================================
         if st.session_state.tipo == "gestor":
             st.title("Painel de Controle - Visão Geral")
             
@@ -70,7 +66,7 @@ else:
                 
                 col3, col4 = st.columns(2)
                 nova_regiao = col3.selectbox("Região", ["ABCDM", "Guarulhos", "São Paulo"])
-                pontos = col4.number_input("Pontos", min_value=0, step=1)
+                novo_horario = col4.text_input("Horário Programado (ex: 14:00)")
                 
                 if st.form_submit_button("Atribuir Tarefa"):
                     if nova_tarefa:
@@ -78,7 +74,7 @@ else:
                         novo_dado = pd.DataFrame([{
                             "login": novo_login, "nome": novo_nome, 
                             "regiao": nova_regiao, "tarefa": nova_tarefa, 
-                            "status": "Pendente", "pontos": pontos
+                            "status": "Pendente", "horario": novo_horario
                         }])
                         df_atualizado = pd.concat([df, novo_dado], ignore_index=True)
                         conn.update(data=df_atualizado)
@@ -89,20 +85,15 @@ else:
 
             st.markdown("---")
             st.subheader("Tabela Geral de Performance")
-            # Tabela interativa: o gestor pode editar qualquer célula e salvar
             df_editado = st.data_editor(df, num_rows="dynamic", use_container_width=True)
             if st.button("Salvar Alterações Globais na Planilha"):
                 conn.update(data=df_editado)
                 st.success("Planilha atualizada!")
                 st.rerun()
 
-        # ==========================================
         # VISÃO DO TÉCNICO
-        # ==========================================
         elif st.session_state.tipo == "tecnico":
             st.title("Minhas Ordens de Serviço")
-            
-            # Filtra a planilha para mostrar apenas as tarefas do técnico logado
             minhas_tarefas = df[df["login"] == st.session_state.usuario]
             
             if minhas_tarefas.empty:
@@ -111,10 +102,9 @@ else:
                 for index, row in minhas_tarefas.iterrows():
                     cor_status = "🟢" if row["status"] == "Realizado" else "🔴"
                     
-                    with st.expander(f"{cor_status} {row['tarefa']} - {row['regiao']} ({row['pontos']} pts)"):
+                    with st.expander(f"{cor_status} {row['tarefa']} - {row['regiao']} (Horário: {row['horario']})"):
                         st.write(f"**Status atual:** {row['status']}")
                         
-                        # Botão para o técnico dar baixa na tarefa
                         if row["status"] != "Realizado":
                             if st.button("Marcar como Realizado", key=f"btn_{index}"):
                                 df.at[index, "status"] = "Realizado"
@@ -122,7 +112,7 @@ else:
                                 st.success("Baixa confirmada!")
                                 st.rerun()
                         else:
-                            st.write("✅ Esta tarefa já foi concluída e computada.")
+                            st.write("✅ Esta tarefa já foi concluída.")
 
     except Exception as e:
         st.error(f"Erro ao carregar dados: {e}")
