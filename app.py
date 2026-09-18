@@ -246,7 +246,7 @@ def main():
         tasks,_ = read_df("tarefas", TASK_COLUMNS)
     tasks["status_exibido"]=tasks.apply(effective_status,axis=1) if not tasks.empty else pd.Series(dtype=str)
     manager=role in ["gestor","gerente"]; visible=tasks if manager else tasks[tasks["login"].astype(str).str.strip()==user.get("login","")]
-    st.title("Central de acompanhamento" if manager else "Minha agenda"); metrics(visible)
+    st.title("Central de Acompanhamento" if manager else "Minha Agenda"); metrics(visible)
     if manager:
         task_form(users,task_ws); options=["Todos"]+sorted([x for x in visible["nome"].astype(str).unique() if x]); selected=st.selectbox("Filtrar responsável",options)
         if selected!="Todos": visible=visible[visible["nome"]==selected]
