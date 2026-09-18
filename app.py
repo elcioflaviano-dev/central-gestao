@@ -111,7 +111,6 @@ def effective_status(row):
     return status
 
 def ensure_recurring_today(tasks, ws):
-    """Cria a agenda do dia a partir das rotinas sem alterar dias anteriores."""
     if tasks.empty: return False
     today = now().date()
     today_text = today.strftime("%d/%m/%Y")
@@ -170,8 +169,32 @@ def task_form(users, task_ws):
                 st.success("Atividade cadastrada sem alterar os registros existentes."); st.rerun()
 
 def metrics(df):
-    counts=df["status_exibido"].value_counts() if not df.empty else {}
-    for col,label in zip(st.columns(4),STATUS): col.metric(label,int(counts.get(label,0)))
+    counts = df["status_exibido"].value_counts() if not df.empty else {}
+    abertas = int(counts.get("Aberta", 0))
+    andamento = int(counts.get("Em andamento", 0))
+    concluidas = int(counts.get("Concluída", 0))
+    atrasadas = int(counts.get("Atrasada", 0))
+
+    st.markdown(f"""
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 15px; margin-bottom: 30px; margin-top: 15px;">
+            <div style="flex: 1; min-width: 150px; background-color: #e0f2fe; padding: 20px; border-radius: 10px; border-left: 6px solid #0ea5e9; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
+                <p style="margin: 0; color: #0369a1; font-size: 15px; font-weight: bold;">Aberta</p>
+                <h2 style="margin: 0; color: #0c4a6e; font-size: 36px; font-weight: 600;">{abertas}</h2>
+            </div>
+            <div style="flex: 1; min-width: 150px; background-color: #fef08a; padding: 20px; border-radius: 10px; border-left: 6px solid #eab308; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
+                <p style="margin: 0; color: #a16207; font-size: 15px; font-weight: bold;">Em andamento</p>
+                <h2 style="margin: 0; color: #713f12; font-size: 36px; font-weight: 600;">{andamento}</h2>
+            </div>
+            <div style="flex: 1; min-width: 150px; background-color: #dcfce7; padding: 20px; border-radius: 10px; border-left: 6px solid #22c55e; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
+                <p style="margin: 0; color: #15803d; font-size: 15px; font-weight: bold;">Concluída</p>
+                <h2 style="margin: 0; color: #14532d; font-size: 36px; font-weight: 600;">{concluidas}</h2>
+            </div>
+            <div style="flex: 1; min-width: 150px; background-color: #fee2e2; padding: 20px; border-radius: 10px; border-left: 6px solid #ef4444; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
+                <p style="margin: 0; color: #b91c1c; font-size: 15px; font-weight: bold;">Atrasada</p>
+                <h2 style="margin: 0; color: #7f1d1d; font-size: 36px; font-weight: 600;">{atrasadas}</h2>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
 def render_tasks(df, ws):
     if df.empty: st.info("Nenhuma atividade encontrada para este perfil."); return
