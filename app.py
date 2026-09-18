@@ -136,6 +136,13 @@ def ensure_recurring_today(tasks, ws):
 
 def login_screen():
     st.title("Central de Gestão ABC")
+    
+    # Exibe o logo no ecrã de login (Ignora se o ficheiro não existir)
+    try:
+        st.image("logo.png", width=200)
+    except Exception:
+        pass
+
     _, center, _ = st.columns([1, 1.2, 1])
     with center, st.form("login"):
         st.subheader("Acesso à agenda eletrônica")
@@ -224,6 +231,13 @@ def main():
         st.error(f"Não foi possível conectar ao Google Sheets: {exc}"); st.info("No Streamlit Cloud, configure a credencial em Settings → Secrets."); st.stop()
     if "user" not in st.session_state: login_screen(); return
     user=st.session_state.user; role=user.get("tipo","").lower()
+    
+    # Exibe o logo no menu lateral
+    try:
+        st.sidebar.image("logo.png", use_container_width=True)
+    except Exception:
+        pass
+
     st.sidebar.write(f"Olá, **{user.get('nome') or user.get('login')}**")
     if st.sidebar.button("Sair",use_container_width=True): del st.session_state.user; st.rerun()
     st.markdown(f"<div class='role-card'><h3>{role.title() or 'Usuário'}</h3><p>{ROLE_TEXT.get(role,'Acompanhar e concluir as atividades atribuídas.')}</p></div>",unsafe_allow_html=True)
