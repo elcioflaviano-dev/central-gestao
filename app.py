@@ -97,7 +97,7 @@ etapas = ["1. Upload de Arquivos", "2. Dados Operacionais por Base", "3. Visuali
 if "pagina_atual" not in st.session_state:
     st.session_state["pagina_atual"] = "3. Visualização da Prévia"
 
-# --- MENU LATERAL E LOGO ---
+# --- MENU LATERAL GLOBAL (DISPONÍVEL EM TODAS AS TELAS) ---
 try:
     st.sidebar.image("novo-logo-totale.png", use_container_width=True)
 except Exception:
@@ -110,38 +110,36 @@ st.sidebar.radio(
     key="pagina_atual"
 )
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 Histórico (Previas_Diarias)")
+try:
+    conn_sidebar = st.connection("gsheets", type=GSheetsConnection)
+    df_historico_previas = conn_sidebar.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Previas_Diarias")
+except Exception:
+    df_historico_previas = pd.DataFrame()
+
+if df_historico_previas is not None and not df_historico_previas.empty and "Data" in df_historico_previas.columns:
+    datas_disponiveis = sorted(df_historico_previas["Data"].astype(str).unique().tolist(), reverse=True)
+    data_selecionada = st.sidebar.selectbox("Selecionar Data:", datas_disponiveis)
+else:
+    data_selecionada = "26/10/2026"
+
 bases_config = [
     {"label": "ABCDM", "projeto": "NET-ABCDM"},
     {"label": "Guarulhos", "projeto": "NET-Guarulhos"},
     {"label": "Leste", "projeto": "NET-LESTE"}
 ]
 
-data_selecionada = None
-if st.session_state["pagina_atual"] == "3. Visualização da Prévia":
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📅 Histórico (Previas_Diarias)")
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        df_historico_previas = conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Previas_Diarias")
-    except Exception:
-        df_historico_previas = pd.DataFrame()
-
-    if df_historico_previas is not None and not df_historico_previas.empty and "Data" in df_historico_previas.columns:
-        datas_disponiveis = sorted(df_historico_previas["Data"].astype(str).unique().tolist(), reverse=True)
-        data_selecionada = st.sidebar.selectbox("Selecionar Data:", datas_disponiveis)
-    else:
-        data_selecionada = "26/10/2026"
-
 # ==============================================================================
-# PÁGINAS 1 E 2 (Mantidas para compatibilidade de fluxo)
+# PÁGINAS 1 E 2 (Mantidas)
 # ==============================================================================
 if st.session_state["pagina_atual"] == "1. Upload de Arquivos":
     st.subheader("📁 Passo 1: Upload e Cruzamento das Bases")
-    st.info("ℹ️ Você pode ir direto para a **Visualização da Prévia** no menu lateral para consultar qualquer data gravada na aba `Previas_Diarias` do Google Sheets[cite: 16].")
+    st.info("ℹ️ Você pode consultar diretamente qualquer data gravada na aba `Previas_Diarias` utilizando o seletor na barra lateral.")
 
 elif st.session_state["pagina_atual"] == "2. Dados Operacionais por Base":
     st.subheader("⚙️ Passo 2: Dados Operacionais por Base")
-    st.info("ℹ️ Para consultar dados já salvos, acesse diretamente a **Visualização da Prévia** no menu lateral.")
+    st.info("ℹ️ Para consultar dados já salvos, utilize a **Visualização da Prévia** no menu lateral.")
 
 # ==============================================================================
 # PÁGINA 3: VISUALIZAÇÃO DA PRÉVIA (LENDO DIRETAMENTE DE 'Previas_Diarias')
@@ -216,7 +214,6 @@ elif st.session_state["pagina_atual"] == "3. Visualização da Prévia":
 
     tabela_html = [gerar_cabecalho_html()]
 
-    # Acumuladores globais para a linha de TOTAL
     g_parados = 0; g_montados = 0; g_meta_os = 0; g_proj_os = 0
     g_meta_cons = 0; g_proj_cons = 0; g_hoje_cons = 0; g_os_cons = 0
     g_tot_os = 0; g_aberta = 0; g_pontos = 0; g_efic_soma = 0.0
