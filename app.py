@@ -16,14 +16,7 @@ st.set_page_config(
 # --- URL DA PLANILHA DO GOOGLE SHEETS ---
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1bF7cQaoEkj-UuKCGmJ4PThoy-CdSPlVg8i3XEB6cu58/edit?gid=0#gid=0"
 
-# --- FUNÇÕES DE NAVEGAÇÃO ---
-def ir_para_passo_2():
-    st.session_state["pagina_atual"] = "2. Dados Operacionais por Base"
-
-def ir_para_passo_3():
-    st.session_state["pagina_atual"] = "3. Visualização da Prévia"
-
-# --- FUNÇÃO DE FORMATAÇÃO PADRÃO BRASILEIRO ---
+# --- FUNÇÕES DE FORMATAÇÃO PADRÃO BRASILEIRO ---
 def fmt_br(val, decimais=0):
     try:
         if pd.isna(val):
@@ -83,7 +76,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def carregar_config_equipe():
+def carregar_config_equipe_global():
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         df_eq = conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Config_Equipe")
@@ -97,7 +90,7 @@ etapas = ["1. Upload de Arquivos", "2. Dados Operacionais por Base", "3. Visuali
 if "pagina_atual" not in st.session_state:
     st.session_state["pagina_atual"] = "3. Visualização da Prévia"
 
-# --- MENU LATERAL GLOBAL (DISPONÍVEL EM TODAS AS TELAS) ---
+# --- MENU LATERAL GLOBAL ---
 try:
     st.sidebar.image("novo-logo-totale.png", use_container_width=True)
 except Exception:
@@ -131,18 +124,21 @@ bases_config = [
 ]
 
 # ==============================================================================
-# PÁGINAS 1 E 2 (Mantidas)
+# TELA 1: UPLOAD DE ARQUIVOS
 # ==============================================================================
 if st.session_state["pagina_atual"] == "1. Upload de Arquivos":
     st.subheader("📁 Passo 1: Upload e Cruzamento das Bases")
-    st.info("ℹ️ Você pode consultar diretamente qualquer data gravada na aba `Previas_Diarias` utilizando o seletor na barra lateral.")
-
-elif st.session_state["pagina_atual"] == "2. Dados Operacionais por Base":
-    st.subheader("⚙️ Passo 2: Dados Operacionais por Base")
-    st.info("ℹ️ Para consultar dados já salvos, utilize a **Visualização da Prévia** no menu lateral.")
+    st.info("ℹ️ Utilize a aba **Visualização da Prévia** no menu lateral para consultar os dados consolidados gravados no Google Sheets.")
 
 # ==============================================================================
-# PÁGINA 3: VISUALIZAÇÃO DA PRÉVIA (LENDO DIRETAMENTE DE 'Previas_Diarias')
+# TELA 2: DADOS OPERACIONAIS
+# ==============================================================================
+elif st.session_state["pagina_atual"] == "2. Dados Operacionais por Base":
+    st.subheader("⚙️ Passo 2: Dados Operacionais por Base")
+    st.info("ℹ️ Os dados operacionais já se encontram sincronizados com a aba `Previas_Diarias` do Google Sheets.")
+
+# ==============================================================================
+# TELA 3: VISUALIZAÇÃO DA PRÉVIA (LENDO DIRETAMENTE DO GOOGLE SHEETS)
 # ==============================================================================
 elif st.session_state["pagina_atual"] == "3. Visualização da Prévia":
     st.subheader("📊 Passo 3: Apresentação da Prévia Diária - Diretoria")
@@ -387,7 +383,7 @@ elif st.session_state["pagina_atual"] == "3. Visualização da Prévia":
 
     # --- BLOCOS INDEPENDENTES POR BASE COM OS SUPERVISORES ---
     st.markdown("### 🏢 Detalhamento Operacional Separado por Base")
-    df_config_eq = carregar_config_equipe()
+    df_config_eq = carregar_config_equipe_global()
 
     for item in bases_config:
         b_label = item["label"]
