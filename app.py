@@ -1,264 +1,463 @@
-import json
-import os
-import uuid
-from datetime import date, datetime, time
-from zoneinfo import ZoneInfo
-
-import gspread
+import io
+import re
+import calendar
+from datetime import datetime
 import pandas as pd
+import numpy as np
 import streamlit as st
-from google.oauth2.service_account import Credentials
+from streamlit_gsheets import GSheetsConnection
 
-SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_ID", "1tjN1xi_Qx5OJz9mD-h4ylwQ7M6tc8dD_MaeX-rgpw3k")
-TZ = ZoneInfo("America/Sao_Paulo")
-STATUS = ["Aberta", "Em andamento", "Concluída", "Atrasada"]
-JANELAS = ["08:00 às 12:00", "12:00 às 15:00", "15:00 às 18:00", "Fechamento do dia"]
-TASK_COLUMNS = ["id", "login", "nome", "tipo", "regiao", "tarefa", "criterio_conclusao", "status", "data", "horario", "janela", "prazo_original", "novo_prazo", "recorrencia", "concluida_em", "justificativa_atraso", "observacao", "criada_em", "atualizada_em", "atualizada_por"]
-USER_COLUMNS = ["login", "senha", "nome", "tipo", "regiao", "ativo"]
-ROLE_TEXT = {
-    "gestor": "Define prioridades, acompanha Supervisor e Coordenador e atua nas exceções da operação.",
-    "gerente": "Define prioridades, acompanha Supervisor e Coordenador e atua nas exceções da operação.",
-    "supervisor": "Garante a execução diária da equipe, acompanha as janelas e fecha suas próprias demandas.",
-    "coordenador": "Coordena os processos operacionais, acompanha o Supervisor e fecha suas próprias demandas.",
-}
+st.set_page_config(
+    page_title="Painel Executivo - Prévia Diária",
+    page_icon="📊",
+    layout="wide"
+)
 
-st.set_page_config(page_title="Central de Gestão ABC", page_icon="📋", layout="wide")
+# --- URL DA PLANILHA DO GOOGLE SHEETS ---
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1bF7cQaoEkj-UuKCGmJ4PThoy-CdSPlVg8i3XEB6cu58/edit?gid=0#gid=0"
+
+# --- FUNÇÕES DE NAVEGAÇÃO ---
+def ir_para_passo_2():
+    st.session_state["pagina_atual"] = "2. Dados Operacionais por Base"
+
+def ir_para_passo_3():
+    st.session_state["pagina_atual"] = "3. Visualização da Prévia"
+
+# --- FUNÇÃO DE FORMATAÇÃO PADRÃO BRASILEIRO ---
+def fmt_br(val, decimais=0):
+    try:
+        if pd.isna(val):
+            val = 0.0
+        if decimais > 0:
+            s = f"{float(val):,.{decimais}f}"
+            s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+            return s
+        else:
+            return f"{int(round(float(val), 0)):,}".replace(".", ".")
+    except Exception:
+        return str(val)
+
+# --- CSS DE ESTILIZAÇÃO PROFISSIONAL EXECUTIVA ---
 st.markdown("""
 <style>
-#MainMenu,footer{visibility:hidden}.block-container{padding-top:1.2rem;max-width:1250px}
-[data-testid="stSidebar"]{background:#f4f7fb;border-right:1px solid #dde5ef}
-.role-card{background:linear-gradient(135deg,#0b4f8a,#1479bc);color:white;padding:18px 22px;border-radius:14px;margin-bottom:18px}
-.role-card h3{color:white;margin:0 0 6px}.role-card p{margin:0}.stButton>button{border-radius:9px;font-weight:600}
-@media(max-width:640px){.block-container{padding:.8rem}.role-card{padding:14px}}
-</style>""", unsafe_allow_html=True)
+    .reportview-container .main .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+    .custom-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        font-size: 11px;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .custom-table th {
+        border: 1px solid #7f8c8d;
+        padding: 5px 3px;
+        font-weight: 700;
+    }
+    .custom-table td {
+        border: 1px solid #bdc3c7;
+        padding: 4px 3px;
+    }
+    .th-data { background-color: #f2f4f4; color: #2c3e50; }
+    .th-qtd-os { background-color: #a9dfbf; color: #145a32; }
+    .th-consult { background-color: #d5dbdb; color: #212f3d; }
+    .th-prod { background-color: #a0824b; color: #ffffff; }
+    .th-quebra-claro { background-color: #f9e79f; color: #7d6608; }
+    .th-ganho { background-color: #a9dfbf; color: #145a32; }
+    .th-gpon { background-color: #f9e79f; color: #7d6608; }
+    .th-mig { background-color: #f5b7b1; color: #78281f; }
+    .th-retorno { background-color: #a9dfbf; color: #145a32; }
+    .th-pme { background-color: #aed6f1; color: #1b4f72; }
+    
+    .col-destaque-amarelo { background-color: #fcf3cf !important; font-weight: bold; color: #7d6608; }
+    .col-destaque-azul { background-color: #d4efdf !important; font-weight: bold; color: #145a32; }
+    
+    .tr-base { background-color: #eafaf1; font-weight: bold; color: #145a32; font-size: 13px; }
+    .tr-sup { background-color: #ffffff; color: #2c3e50; font-size: 11px; }
+    .tr-total { background-color: #d4efdf; font-weight: 900; color: #145a32; font-size: 13px; border-top: 2px solid #27ae60; }
+    .red-text { color: #c0392b; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
-def now(): return datetime.now(TZ)
+@st.cache_data(ttl=600)
+def carregar_config_equipe():
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_eq = conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Config_Equipe")
+        return df_eq
+    except Exception:
+        return pd.DataFrame(columns=["Base", "Supervisor", "Montados", "Parados"])
 
-def credentials_info():
-    if "gcp_service_account" in st.secrets:
-        return dict(st.secrets["gcp_service_account"])
-    raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    if raw: return json.loads(raw)
-    path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if path and os.path.isfile(path):
-        with open(path, encoding="utf-8") as f: return json.load(f)
-    raise RuntimeError("Credencial ausente. Configure [gcp_service_account] no Secrets do Streamlit.")
+# --- INICIALIZAÇÃO DE ESTADO E NAVEGAÇÃO ---
+etapas = ["1. Upload de Arquivos", "2. Dados Operacionais por Base", "3. Visualização da Prévia"]
 
-@st.cache_resource(show_spinner=False)
-def spreadsheet():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
-    creds = Credentials.from_service_account_info(credentials_info(), scopes=scopes)
-    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+if "pagina_atual" not in st.session_state:
+    st.session_state["pagina_atual"] = "3. Visualização da Prévia"
 
-def worksheet(name, headers):
-    book = spreadsheet()
-    try: ws = book.worksheet(name)
-    except gspread.WorksheetNotFound: ws = book.add_worksheet(title=name, rows=1000, cols=max(20, len(headers)))
-    values = ws.get_all_values()
-    if not values: ws.append_row(headers, value_input_option="RAW")
+# --- MENU LATERAL E LOGO ---
+try:
+    st.sidebar.image("novo-logo-totale.png", use_container_width=True)
+except Exception:
+    pass
+
+st.sidebar.title("Navegação")
+st.sidebar.radio(
+    "Ir para:",
+    etapas,
+    key="pagina_atual"
+)
+
+bases_config = [
+    {"label": "ABCDM", "projeto": "NET-ABCDM"},
+    {"label": "Guarulhos", "projeto": "NET-Guarulhos"},
+    {"label": "Leste", "projeto": "NET-LESTE"}
+]
+
+data_selecionada = None
+if st.session_state["pagina_atual"] == "3. Visualização da Prévia":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Histórico (Previas_Diarias)")
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_historico_previas = conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Previas_Diarias")
+    except Exception:
+        df_historico_previas = pd.DataFrame()
+
+    if df_historico_previas is not None and not df_historico_previas.empty and "Data" in df_historico_previas.columns:
+        datas_disponiveis = sorted(df_historico_previas["Data"].astype(str).unique().tolist(), reverse=True)
+        data_selecionada = st.sidebar.selectbox("Selecionar Data:", datas_disponiveis)
     else:
-        current = values[0]
-        missing = [h for h in headers if h not in current]
-        if missing:
-            end = gspread.utils.rowcol_to_a1(1, len(current) + len(missing))
-            ws.update(range_name=f"A1:{end}", values=[current + missing])
-    return ws
+        data_selecionada = "26/10/2026"
 
-def read_df(name, headers):
-    ws = worksheet(name, headers)
-    df = pd.DataFrame(ws.get_all_records(numericise_ignore=["all"]))
-    for col in headers:
-        if col not in df.columns: df[col] = ""
-    return df.fillna(""), ws
+# ==============================================================================
+# PÁGINAS 1 E 2 (Mantidas para compatibilidade de fluxo)
+# ==============================================================================
+if st.session_state["pagina_atual"] == "1. Upload de Arquivos":
+    st.subheader("📁 Passo 1: Upload e Cruzamento das Bases")
+    st.info("ℹ️ Você pode ir direto para a **Visualização da Prévia** no menu lateral para consultar qualquer data gravada na aba `Previas_Diarias` do Google Sheets[cite: 16].")
 
-def ensure_task_ids(df, ws):
-    if df.empty: return df
-    id_col = ws.row_values(1).index("id") + 1
-    for pos, value in enumerate(df["id"].astype(str), start=2):
-        if not value.strip():
-            value = str(uuid.uuid4()); ws.update_cell(pos, id_col, value); df.at[pos - 2, "id"] = value
-    return df
+elif st.session_state["pagina_atual"] == "2. Dados Operacionais por Base":
+    st.subheader("⚙️ Passo 2: Dados Operacionais por Base")
+    st.info("ℹ️ Para consultar dados já salvos, acesse diretamente a **Visualização da Prévia** no menu lateral.")
 
-def append_row(ws, row):
-    headers = ws.row_values(1)
-    ws.append_row([str(row.get(h, "")) for h in headers], value_input_option="USER_ENTERED")
+# ==============================================================================
+# PÁGINA 3: VISUALIZAÇÃO DA PRÉVIA (LENDO DIRETAMENTE DE 'Previas_Diarias')
+# ==============================================================================
+elif st.session_state["pagina_atual"] == "3. Visualização da Prévia":
+    st.subheader("📊 Passo 3: Apresentação da Prévia Diária - Diretoria")
 
-def update_task(ws, task_id, changes):
-    values = ws.get_all_values()
-    if not values or "id" not in values[0]: return False
-    header, id_idx = values[0], values[0].index("id")
-    for row_number, row in enumerate(values[1:], start=2):
-        if len(row) > id_idx and row[id_idx] == task_id:
-            for field, value in changes.items():
-                if field in header: ws.update_cell(row_number, header.index(field) + 1, str(value))
-            return True
-    return False
-
-def normalize_status(value):
-    value = str(value).strip().lower()
-    return {"pendente":"Aberta", "realizado":"Concluída", "concluido":"Concluída", "concluída":"Concluída", "em andamento":"Em andamento", "atrasada":"Atrasada"}.get(value, "Aberta")
-
-def effective_status(row):
-    status = normalize_status(row.get("status", ""))
-    if status == "Concluída": return status
-    deadline = str(row.get("novo_prazo") or row.get("prazo_original") or "").strip()
-    if not deadline: deadline = f"{row.get('data','')} {row.get('horario','')}".strip()
-    parsed = pd.to_datetime(deadline, dayfirst=True, errors="coerce")
-    if pd.notna(parsed):
-        local = parsed.to_pydatetime()
-        if local.tzinfo is None: local = local.replace(tzinfo=TZ)
-        if local < now(): return "Atrasada"
-    return status
-
-def ensure_recurring_today(tasks, ws):
-    if tasks.empty: return False
-    today = now().date()
-    today_text = today.strftime("%d/%m/%Y")
-    existing = {(str(r.get("login", "")), str(r.get("tarefa", "")), str(r.get("janela", ""))) for _, r in tasks[tasks["data"].astype(str) == today_text].iterrows()}
-    created = False
-    recurring = tasks[tasks["recorrencia"].astype(str).str.lower().isin(["diária", "diaria", "dias úteis", "dias uteis"])]
-    recurring = recurring.drop_duplicates(subset=["login", "tarefa", "janela"], keep="last")
-    for _, row in recurring.iterrows():
-        recurrence = str(row.get("recorrencia", "")).lower()
-        if "úteis" in recurrence or "uteis" in recurrence:
-            if today.weekday() >= 5: continue
-        key = (str(row.get("login", "")), str(row.get("tarefa", "")), str(row.get("janela", "")))
-        if key in existing: continue
-        stamp = now().strftime("%d/%m/%Y %H:%M:%S")
-        hour = str(row.get("horario", "") or "18:00")
-        new_row = {h: row.get(h, "") for h in TASK_COLUMNS}
-        new_row.update({"id": str(uuid.uuid4()), "status": "Aberta", "data": today_text,
-                        "prazo_original": f"{today_text} {hour}", "novo_prazo": "",
-                        "concluida_em": "", "justificativa_atraso": "", "observacao": "",
-                        "criada_em": stamp, "atualizada_em": stamp, "atualizada_por": "automação diária"})
-        append_row(ws, new_row); created = True
-    return created
-
-def login_screen():
-    st.title("Central de Gestão ABC")
-    
-    # Exibe o logo no ecrã de login (Ignora se o ficheiro não existir)
     try:
-        st.image("logo.png", width=200)
-    except Exception:
-        pass
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_previas = conn.read(spreadsheet=GOOGLE_SHEET_URL, worksheet="Previas_Diarias")
+    except Exception as e:
+        st.error(f"Erro ao ler a aba 'Previas_Diarias' do Google Sheets: {e}")
+        df_previas = pd.DataFrame()
 
-    _, center, _ = st.columns([1, 1.2, 1])
-    with center, st.form("login"):
-        st.subheader("Acesso à agenda eletrônica")
-        login = st.text_input("Login"); password = st.text_input("Senha", type="password")
-        submitted = st.form_submit_button("Entrar", use_container_width=True)
-    if submitted:
-        users, _ = read_df("usuarios", USER_COLUMNS)
-        if users.empty: st.error("A aba 'usuarios' está vazia."); return
-        users["login"] = users["login"].astype(str).str.strip()
-        users["senha"] = users["senha"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        match = users[(users["login"] == login.strip()) & (users["senha"] == password.strip())]
-        if match.empty: st.error("Login ou senha inválidos.")
-        else:
-            user = match.iloc[0]
-            st.session_state.user = {k:str(user.get(k, "")).strip() for k in USER_COLUMNS}; st.rerun()
+    data_formatada = data_selecionada if data_selecionada else "26/10/2026"
 
-def task_form(users, task_ws):
-    executors = users[users["tipo"].astype(str).str.lower().isin(["supervisor", "coordenador"])]
-    with st.expander("➕ Nova atividade"), st.form("new_task", clear_on_submit=True):
-        labels = {f"{r['nome']} — {str(r['tipo']).title()}":r for _,r in executors.iterrows()}
-        chosen = st.selectbox("Responsável", list(labels)) if labels else None
-        title = st.text_input("Atividade"); criterion = st.text_area("Critério de conclusão")
-        c1,c2,c3 = st.columns(3)
-        task_date = c1.date_input("Data", value=date.today()); window = c2.selectbox("Janela", JANELAS); task_time = c3.time_input("Prazo", value=time(18,0))
-        recurrence = st.selectbox("Recorrência", ["Não repetir", "Diária", "Dias úteis", "Semanal"])
-        if st.form_submit_button("Cadastrar atividade", use_container_width=True):
-            if not chosen or not title.strip(): st.warning("Informe o responsável e a atividade.")
-            else:
-                p=labels[chosen]; stamp=now().strftime("%d/%m/%Y %H:%M:%S"); deadline=f"{task_date:%d/%m/%Y} {task_time:%H:%M}"
-                append_row(task_ws,{"id":str(uuid.uuid4()),"login":p["login"],"nome":p["nome"],"tipo":p["tipo"],"regiao":p.get("regiao","ABCDM"),"tarefa":title.strip(),"criterio_conclusao":criterion.strip(),"status":"Aberta","data":f"{task_date:%d/%m/%Y}","horario":f"{task_time:%H:%M}","janela":window,"prazo_original":deadline,"recorrencia":recurrence,"criada_em":stamp,"atualizada_em":stamp,"atualizada_por":st.session_state.user["login"]})
-                st.success("Atividade cadastrada sem alterar os registros existentes."); st.rerun()
+    def gerar_cabecalho_html():
+        return f"""
+        <table class="custom-table">
+            <thead>
+                <tr>
+                    <th rowspan="2" class="th-data">{data_formatada}</th>
+                    <th rowspan="2" class="th-data">Parados</th>
+                    <th rowspan="2" class="th-data col-destaque-amarelo">Montados</th>
+                    <th colspan="2" class="th-qtd-os">QTDE. DE O.S. OUTUBRO</th>
+                    <th colspan="4" class="th-consult">CONSULTIVO OUTUBRO</th>
+                    <th colspan="10" class="th-prod">PRODUTIVIDADE (Projeção)</th>
+                    <th rowspan="2" class="th-prod">ND</th>
+                    <th colspan="2" class="th-quebra-claro">QUEBRA CLARO</th>
+                    <th rowspan="2" class="th-ganho">GANHO<br>O.S.</th>
+                    <th colspan="2" class="th-gpon">GPON</th>
+                    <th colspan="3" class="th-mig">MIGRAÇÃO</th>
+                    <th rowspan="2" class="th-retorno">RETORNO<br>WO</th>
+                    <th colspan="3" class="th-pme">PME</th>
+                </tr>
+                <tr>
+                    <th class="th-qtd-os">Meta</th>
+                    <th class="th-qtd-os">Projeção</th>
+                    <th class="th-consult">Meta</th>
+                    <th class="th-consult">Projeção</th>
+                    <th class="th-consult">Hoje</th>
+                    <th class="th-consult">O.S</th>
+                    <th class="th-prod">TOTAL O.S.</th>
+                    <th class="th-prod">O.S. ABERTA</th>
+                    <th class="th-prod">Pontos</th>
+                    <th class="th-prod">Efic. (%)</th>
+                    <th class="th-prod col-destaque-azul">Média O.S.</th>
+                    <th class="th-prod">O.S. Exec.</th>
+                    <th class="th-prod col-destaque-amarelo">O.S Sem Consult</th>
+                    <th class="th-prod">Quebra INS (%)</th>
+                    <th class="th-prod">Quebra SERV (%)</th>
+                    <th class="th-prod">Quebra ND (%)</th>
+                    <th class="th-quebra-claro">O.S. Canc.</th>
+                    <th class="th-quebra-claro">Saiu TOA</th>
+                    <th class="th-gpon">Total O.S.</th>
+                    <th class="th-gpon">Quebra</th>
+                    <th class="th-mig">Total O.S.</th>
+                    <th class="th-mig">Quebra</th>
+                    <th class="th-mig">Canc.</th>
+                    <th class="th-pme">WO</th>
+                    <th class="th-pme">Quebra</th>
+                    <th class="th-pme">Canc.</th>
+                </tr>
+            </thead>
+            <tbody>
+        """
 
-def metrics(df):
-    counts = df["status_exibido"].value_counts() if not df.empty else {}
-    abertas = int(counts.get("Aberta", 0))
-    andamento = int(counts.get("Em andamento", 0))
-    concluidas = int(counts.get("Concluída", 0))
-    atrasadas = int(counts.get("Atrasada", 0))
+    if df_previas is not None and not df_previas.empty and "Data" in df_previas.columns and "Base" in df_previas.columns:
+        df_dia = df_previas[df_previas["Data"].astype(str).str.strip() == str(data_formatada).strip()].copy()
+    else:
+        df_dia = pd.DataFrame()
 
-    st.markdown(f"""
-        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 15px; margin-bottom: 30px; margin-top: 15px;">
-            <div style="flex: 1; min-width: 150px; background-color: #e0f2fe; padding: 20px; border-radius: 10px; border-left: 6px solid #0ea5e9; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
-                <p style="margin: 0; color: #0369a1; font-size: 15px; font-weight: bold;">Aberta</p>
-                <h2 style="margin: 0; color: #0c4a6e; font-size: 36px; font-weight: 600;">{abertas}</h2>
-            </div>
-            <div style="flex: 1; min-width: 150px; background-color: #fef08a; padding: 20px; border-radius: 10px; border-left: 6px solid #eab308; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
-                <p style="margin: 0; color: #a16207; font-size: 15px; font-weight: bold;">Em andamento</p>
-                <h2 style="margin: 0; color: #713f12; font-size: 36px; font-weight: 600;">{andamento}</h2>
-            </div>
-            <div style="flex: 1; min-width: 150px; background-color: #dcfce7; padding: 20px; border-radius: 10px; border-left: 6px solid #22c55e; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
-                <p style="margin: 0; color: #15803d; font-size: 15px; font-weight: bold;">Concluída</p>
-                <h2 style="margin: 0; color: #14532d; font-size: 36px; font-weight: 600;">{concluidas}</h2>
-            </div>
-            <div style="flex: 1; min-width: 150px; background-color: #fee2e2; padding: 20px; border-radius: 10px; border-left: 6px solid #ef4444; box-shadow: 2px 2px 10px rgba(0,0,0,0.05);">
-                <p style="margin: 0; color: #b91c1c; font-size: 15px; font-weight: bold;">Atrasada</p>
-                <h2 style="margin: 0; color: #7f1d1d; font-size: 36px; font-weight: 600;">{atrasadas}</h2>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+    tabela_html = [gerar_cabecalho_html()]
 
-def render_tasks(df, ws):
-    if df.empty: st.info("Nenhuma atividade encontrada para este perfil."); return
-    for _,row in df.iterrows():
-        status=row["status_exibido"]; icon={"Aberta":"⚪","Em andamento":"🔵","Concluída":"🟢","Atrasada":"🔴"}[status]
-        with st.expander(f"{icon} {row['tarefa']} — {status}"):
-            st.caption(f"{row.get('janela','') or row.get('horario','')} | Responsável: {row.get('nome','')}")
-            if row.get("criterio_conclusao"): st.write(f"**Considerada concluída quando:** {row['criterio_conclusao']}")
-            new_status=st.selectbox("Status",STATUS,index=STATUS.index(status),key=f"s_{row['id']}")
-            note=st.text_area("Observação",value=str(row.get("observacao","")),key=f"o_{row['id']}")
-            justification=""
-            if status=="Atrasada" or new_status=="Atrasada": justification=st.text_area("Justificativa do atraso",value=str(row.get("justificativa_atraso","")),key=f"j_{row['id']}")
-            if st.button("Salvar atualização",key=f"save_{row['id']}"):
-                if new_status=="Atrasada" and not justification.strip(): st.warning("Informe a justificativa do atraso.")
-                else:
-                    stamp=now().strftime("%d/%m/%Y %H:%M:%S")
-                    changes={"status":new_status,"observacao":note,"justificativa_atraso":justification,"atualizada_em":stamp,"atualizada_por":st.session_state.user["login"]}
-                    if new_status=="Concluída" and not row.get("concluida_em"): changes["concluida_em"]=stamp
-                    update_task(ws,row["id"],changes)
-                    _,hws=read_df("historico",["data_hora","tarefa_id","usuario","acao","detalhes"])
-                    append_row(hws,{"data_hora":stamp,"tarefa_id":row["id"],"usuario":st.session_state.user["login"],"acao":"Atualização","detalhes":f"Status: {new_status}"})
-                    st.success("Atualização salva no Google Sheets."); st.rerun()
+    # Acumuladores globais para a linha de TOTAL
+    g_parados = 0; g_montados = 0; g_meta_os = 0; g_proj_os = 0
+    g_meta_cons = 0; g_proj_cons = 0; g_hoje_cons = 0; g_os_cons = 0
+    g_tot_os = 0; g_aberta = 0; g_pontos = 0; g_efic_soma = 0.0
+    g_media_os_soma = 0.0; g_proj_dia = 0; g_os_sem_c = 0
+    g_q_ins_soma = 0.0; g_q_serv_soma = 0.0; g_q_nd_soma = 0.0; g_nd = 0
+    g_canc = 0; g_saiu_toa = 0; g_ganho = 0; g_gpon = 0; g_q_gpon_soma = 0.0
+    g_mig = 0; g_q_mig_soma = 0.0; g_mig_canc = 0; g_retorno = 0
+    g_pme = 0; g_q_pme_soma = 0.0; g_pme_canc = 0
 
-def main():
-    try: spreadsheet()
-    except Exception as exc:
-        st.error(f"Não foi possível conectar ao Google Sheets: {exc}"); st.info("No Streamlit Cloud, configure a credencial em Settings → Secrets."); st.stop()
-    if "user" not in st.session_state: login_screen(); return
-    user=st.session_state.user; role=user.get("tipo","").lower()
-    
-    # Exibe o logo no menu lateral
-    try:
-        st.sidebar.image("logo.png", use_container_width=True)
-    except Exception:
-        pass
+    qtd_bases_validas = 0
 
-    st.sidebar.write(f"Olá, **{user.get('nome') or user.get('login')}**")
-    if st.sidebar.button("Sair",use_container_width=True): del st.session_state.user; st.rerun()
-    st.markdown(f"<div class='role-card'><h3>{role.title() or 'Usuário'}</h3><p>{ROLE_TEXT.get(role,'Acompanhar e concluir as atividades atribuídas.')}</p></div>",unsafe_allow_html=True)
-    tasks,task_ws=read_df("tarefas",TASK_COLUMNS); users,_=read_df("usuarios",USER_COLUMNS); tasks=ensure_task_ids(tasks,task_ws)
-    if ensure_recurring_today(tasks, task_ws):
-        tasks,_ = read_df("tarefas", TASK_COLUMNS)
-    tasks["status_exibido"]=tasks.apply(effective_status,axis=1) if not tasks.empty else pd.Series(dtype=str)
-    manager=role in ["gestor","gerente"]; visible=tasks if manager else tasks[tasks["login"].astype(str).str.strip()==user.get("login","")]
-    st.title("Central de Acompanhamento" if manager else "Minha Agenda"); metrics(visible)
-    if manager:
-        task_form(users,task_ws); options=["Todos"]+sorted([x for x in visible["nome"].astype(str).unique() if x]); selected=st.selectbox("Filtrar responsável",options)
-        if selected!="Todos": visible=visible[visible["nome"]==selected]
-    tabs=st.tabs(["Atividades","Fechamento do dia","Resumo semanal"] if manager else ["Atividades","Fechamento do dia"])
-    with tabs[0]: render_tasks(visible.sort_values(["data","horario"],ascending=True),task_ws)
-    with tabs[1]:
-        st.subheader("Fechamento do dia"); metrics(visible); pending=visible[visible["status_exibido"]!="Concluída"]; st.write(f"**Pendências para fechamento:** {len(pending)}")
-        if not pending.empty: st.dataframe(pending[["nome","tarefa","janela","status_exibido"]],hide_index=True,use_container_width=True)
-    if manager:
-        with tabs[2]:
-            st.subheader("Resumo semanal")
-            if visible.empty: st.info("Ainda não há atividades.")
-            else: st.dataframe(visible.groupby(["nome","status_exibido"]).size().unstack(fill_value=0),use_container_width=True)
+    for item in bases_config:
+        b_label = item["label"]
+        row_b = df_dia[df_dia["Base"].astype(str).str.upper().str.strip() == b_label.upper()]
+        
+        if not row_b.empty:
+            r = row_b.iloc[0]
+            p_base = float(r.get("Parados", 0))
+            m_base = float(r.get("Montados", 0))
+            meta_os = float(r.get("Meta O.S.", 0))
+            proj_os = float(r.get("Projeção O.S.", 0))
+            meta_c = float(r.get("Meta Consultivo", 0))
+            proj_c = float(r.get("Projeção Consultivo", 0))
+            hoje_c = float(r.get("Hoje Consultivo", 0))
+            os_c = float(r.get("O.S. Consultivo", 0))
+            tot_os = float(r.get("Total O.S.", 0))
+            os_aberta = float(r.get("O.S. Aberta", 0))
+            pontos = float(r.get("Pontos", 0))
+            efic = float(r.get("Efic (%)", 0))
+            media_os = float(r.get("Média O.S.", 0))
+            os_exec = float(r.get("O.S. Exec. (Proj)", 0))
+            os_sem_c = float(r.get("O.S. Sem Consult", 0))
+            q_ins = float(r.get("Quebra INS (%)", 0))
+            q_serv = float(r.get("Quebra SERV (%)", 0))
+            q_nd = float(r.get("Quebra ND (%)", 0))
+            nd = float(r.get("ND", 0)) if "ND" in r else 0
+            os_canc = float(r.get("O.S. Canc.", 0))
+            saiu_toa = float(r.get("Saiu TOA", 0))
+            ganho = float(r.get("Ganho O.S.", 0))
+            gpon_tot = float(r.get("GPON Total", 0))
+            gpon_q = float(r.get("GPON Quebra (%)", 0))
+            mig_tot = float(r.get("Migração Total", 0))
+            mig_q = float(r.get("Migração Quebra (%)", 0))
+            mig_canc = float(r.get("Migração Canc.", 0))
+            retorno = float(r.get("Retorno WO", 0))
+            pme_tot = float(r.get("PME WO", 0))
+            pme_q = float(r.get("PME Quebra (%)", 0))
+            pme_canc = float(r.get("PME Canc.", 0))
 
-if __name__=="__main__": main()
+            g_parados += p_base
+            g_montados += m_base
+            g_meta_os += meta_os
+            g_proj_os += proj_os
+            g_meta_cons += meta_c
+            g_proj_cons += proj_c
+            g_hoje_cons += hoje_c
+            g_os_cons += os_c
+            g_tot_os += tot_os
+            g_aberta += os_aberta
+            g_pontos += pontos
+            g_efic_soma += efic
+            g_media_os_soma += media_os
+            g_proj_dia += os_exec
+            g_os_sem_c += os_sem_c
+            g_q_ins_soma += q_ins
+            g_q_serv_soma += q_serv
+            g_q_nd_soma += q_nd
+            g_nd += nd
+            g_canc += os_canc
+            g_saiu_toa += saiu_toa
+            g_ganho += ganho
+            g_gpon += gpon_tot
+            g_q_gpon_soma += gpon_q
+            g_mig += mig_tot
+            g_q_mig_soma += mig_q
+            g_mig_canc += mig_canc
+            g_retorno += retorno
+            g_pme += pme_tot
+            g_q_pme_soma += pme_q
+            g_pme_canc += pme_canc
+            qtd_bases_validas += 1
+
+            tabela_html.append(
+                f'<tr class="tr-base">'
+                f'<td style="text-align: left; padding-left: 8px;">{b_label}</td>'
+                f'<td>{fmt_br(p_base)}</td>'
+                f'<td class="col-destaque-amarelo">{fmt_br(m_base)}</td>'
+                f'<td>{fmt_br(meta_os)}</td>'
+                f'<td class="red-text">{fmt_br(proj_os)}</td>'
+                f'<td>{fmt_br(meta_c)}</td>'
+                f'<td class="red-text">{fmt_br(proj_c)}</td>'
+                f'<td>{fmt_br(hoje_c)}</td>'
+                f'<td>{fmt_br(os_c)}</td>'
+                f'<td>{fmt_br(tot_os)}</td>'
+                f'<td>{fmt_br(os_aberta)}</td>'
+                f'<td>{fmt_br(pontos)}</td>'
+                f'<td>{fmt_br(efic, 1)}%</td>'
+                f'<td class="col-destaque-azul">{fmt_br(media_os, 2)}</td>'
+                f'<td>{fmt_br(os_exec)}</td>'
+                f'<td class="col-destaque-amarelo">{fmt_br(os_sem_c)}</td>'
+                f'<td>{fmt_br(q_ins, 1)}%</td>'
+                f'<td>{fmt_br(q_serv, 1)}%</td>'
+                f'<td>{fmt_br(q_nd, 1)}%</td>'
+                f'<td>{fmt_br(nd)}</td>'
+                f'<td>{fmt_br(os_canc)}</td>'
+                f'<td>{fmt_br(saiu_toa)}</td>'
+                f'<td>{fmt_br(ganho)}</td>'
+                f'<td>{fmt_br(gpon_tot)}</td>'
+                f'<td>{fmt_br(gpon_q, 1)}%</td>'
+                f'<td>{fmt_br(mig_tot)}</td>'
+                f'<td>{fmt_br(mig_q, 1)}%</td>'
+                f'<td>{fmt_br(mig_canc)}</td>'
+                f'<td>{fmt_br(retorno)}</td>'
+                f'<td>{fmt_br(pme_tot)}</td>'
+                f'<td>{fmt_br(pme_q, 1)}%</td>'
+                f'<td>{fmt_br(pme_canc)}</td>'
+                f'</tr>'
+            )
+
+    div_v = max(1, qtd_bases_validas)
+    g_efic_media = g_efic_soma / div_v
+    g_media_os_media = g_media_os_soma / div_v
+    g_q_ins_media = g_q_ins_soma / div_v
+    g_q_serv_media = g_q_serv_soma / div_v
+    g_q_nd_media = g_q_nd_soma / div_v
+    g_q_gpon_media = g_q_gpon_soma / div_v
+    g_q_mig_media = g_q_mig_soma / div_v
+    g_q_pme_media = g_q_pme_soma / div_v
+
+    tabela_html.append(
+        f'<tr class="tr-total">'
+        f'<td style="text-align: left; padding-left: 8px;">TOTAL INSTALAÇÃO</td>'
+        f'<td>{fmt_br(g_parados)}</td>'
+        f'<td class="col-destaque-amarelo">{fmt_br(g_montados)}</td>'
+        f'<td>{fmt_br(g_meta_os)}</td>'
+        f'<td class="red-text">{fmt_br(g_proj_os)}</td>'
+        f'<td>{fmt_br(g_meta_cons)}</td>'
+        f'<td class="red-text">{fmt_br(g_proj_cons)}</td>'
+        f'<td>{fmt_br(g_hoje_cons)}</td>'
+        f'<td>{fmt_br(g_os_cons)}</td>'
+        f'<td>{fmt_br(g_tot_os)}</td>'
+        f'<td>{fmt_br(g_aberta)}</td>'
+        f'<td>{fmt_br(g_pontos)}</td>'
+        f'<td>{fmt_br(g_efic_media, 1)}%</td>'
+        f'<td class="col-destaque-azul">{fmt_br(g_media_os_media, 2)}</td>'
+        f'<td>{fmt_br(g_proj_dia)}</td>'
+        f'<td class="col-destaque-amarelo">{fmt_br(g_os_sem_c)}</td>'
+        f'<td>{fmt_br(g_q_ins_media, 1)}%</td>'
+        f'<td>{fmt_br(g_q_serv_media, 1)}%</td>'
+        f'<td>{fmt_br(g_q_nd_media, 1)}%</td>'
+        f'<td>{fmt_br(g_nd)}</td>'
+        f'<td>{fmt_br(g_canc)}</td>'
+        f'<td>{fmt_br(g_saiu_toa)}</td>'
+        f'<td>{fmt_br(g_ganho)}</td>'
+        f'<td>{fmt_br(g_gpon)}</td>'
+        f'<td>{fmt_br(g_q_gpon_media, 1)}%</td>'
+        f'<td>{fmt_br(g_mig)}</td>'
+        f'<td>{fmt_br(g_q_mig_media, 1)}%</td>'
+        f'<td>{fmt_br(g_mig_canc)}</td>'
+        f'<td>{fmt_br(g_retorno)}</td>'
+        f'<td>{fmt_br(g_pme)}</td>'
+        f'<td>{fmt_br(g_q_pme_media, 1)}%</td>'
+        f'<td>{fmt_br(g_pme_canc)}</td>'
+        f'</tr>'
+        f'</tbody>'
+        f'</table>'
+    )
+
+    st.markdown("".join(tabela_html), unsafe_allow_html=True)
+    st.markdown("<br><hr><br>", unsafe_allow_html=True)
+
+    # --- BLOCOS INDEPENDENTES POR BASE COM OS SUPERVISORES ---
+    st.markdown("### 🏢 Detalhamento Operacional Separado por Base")
+    df_config_eq = carregar_config_equipe()
+
+    for item in bases_config:
+        b_label = item["label"]
+        b_proj = item["projeto"]
+        row_b = df_dia[df_dia["Base"].astype(str).str.upper().str.strip() == b_label.upper()]
+        
+        if not row_b.empty:
+            r = row_b.iloc[0]
+            with st.expander(f"📂 Base: {b_label} (Clique para Expandir/Recolher Detalhamento)"):
+                tabela_bloco_html = [
+                    gerar_cabecalho_html(),
+                    f'<tr class="tr-base">'
+                    f'<td style="text-align: left; padding-left: 8px;">{b_label}</td>'
+                    f'<td>{fmt_br(r.get("Parados", 0))}</td>'
+                    f'<td class="col-destaque-amarelo">{fmt_br(r.get("Montados", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Meta O.S.", 0))}</td>'
+                    f'<td class="red-text">{fmt_br(r.get("Projeção O.S.", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Meta Consultivo", 0))}</td>'
+                    f'<td class="red-text">{fmt_br(r.get("Projeção Consultivo", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Hoje Consultivo", 0))}</td>'
+                    f'<td>{fmt_br(r.get("O.S. Consultivo", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Total O.S.", 0))}</td>'
+                    f'<td>{fmt_br(r.get("O.S. Aberta", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Pontos", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Efic (%)", 0), 1)}%</td>'
+                    f'<td class="col-destaque-azul">{fmt_br(r.get("Média O.S.", 0), 2)}</td>'
+                    f'<td>{fmt_br(r.get("O.S. Exec. (Proj)", 0))}</td>'
+                    f'<td class="col-destaque-amarelo">{fmt_br(r.get("O.S. Sem Consult", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Quebra INS (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("Quebra SERV (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("Quebra ND (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("ND", 0))}</td>'
+                    f'<td>{fmt_br(r.get("O.S. Canc.", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Saiu TOA", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Ganho O.S.", 0))}</td>'
+                    f'<td>{fmt_br(r.get("GPON Total", 0))}</td>'
+                    f'<td>{fmt_br(r.get("GPON Quebra (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("Migração Total", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Migração Quebra (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("Migração Canc.", 0))}</td>'
+                    f'<td>{fmt_br(r.get("Retorno WO", 0))}</td>'
+                    f'<td>{fmt_br(r.get("PME WO", 0))}</td>'
+                    f'<td>{fmt_br(r.get("PME Quebra (%)", 0), 1)}%</td>'
+                    f'<td>{fmt_br(r.get("PME Canc.", 0))}</td>'
+                    f'</tr>'
+                ]
+
+                df_b_eq = df_config_eq[df_config_eq["Base"].astype(str).str.upper() == b_proj.upper()] if not df_config_eq.empty else pd.DataFrame()
+                if not df_b_eq.empty and "Supervisor" in df_b_eq.columns:
+                    for _, sup_row in df_b_eq.iterrows():
+                        s_nome = str(sup_row["Supervisor"]).strip()
+                        p_sup = sup_row.get("Parados", 0)
+                        m_sup = sup_row.get("Montados", r.get("Montados", 0))
+                        primeiro_nome = s_nome.split()[0]
+                        
+                        tabela_bloco_html.append(
+                            f'<tr class="tr-sup">'
+                            f'<td style="text-align: left; padding-left: 20px;">{primeiro_nome}</td>'
+                            f'<td>{fmt_br(p_sup)}</td>'
+                            f'<td class="col-destaque-amarelo">{fmt_br(m_sup)}</td>'
+                            f'<td></td><td></td><td></td><td></td><td></td><td></td>'
+                            f'<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'
+                            f'<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'
+                            f'<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'
+                            f'</tr>'
+                        )
+
+                tabela_bloco_html.append('</tbody></table>')
+                st.markdown("".join(tabela_bloco_html), unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
